@@ -216,28 +216,24 @@ func (ht *HTTPTarget) Write(messages []*models.Message) (*models.TargetWriteResu
 			continue
 		}
 
-		func() {
-			defer resp.Body.Close() // Ensure the body is always closed
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() // Ensure the body is always closed
+		if err != nil {
+			errResult = multierror.Append(errResult, fmt.Errorf("Error discarding response body: %v", err))
+			failed = append(failed, msg)
+			continue
+		}
 
-			// Drain and discard the response body
-			_, err := io.Copy(io.Discard, resp.Body)
-			if err != nil {
-				errResult = multierror.Append(errResult, fmt.Errorf("Error discarding response body: %v", err))
-				failed = append(failed, msg)
-				return
+		if resp.StatusCode == http.StatusOK {
+			sent = append(sent, msg)
+			if msg.AckFunc != nil { // Ack successful messages
+				msg.AckFunc()
 			}
-
-			if resp.StatusCode == http.StatusOK {
-				sent = append(sent, msg)
-				if msg.AckFunc != nil { // Ack successful messages
-					msg.AckFunc()
-				}
-			} else {
-				errResult = multierror.Append(errResult, errors.New("Got response status: "+resp.Status))
-				failed = append(failed, msg)
-				return
-			}
-		}()
+		} else {
+			errResult = multierror.Append(errResult, errors.New("Got response status: "+resp.Status))
+			failed = append(failed, msg)
+			continue
+		}
 	}
 	if errResult != nil {
 		errResult = errors.Wrap(errResult, "Error sending http requests")
